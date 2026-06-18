@@ -224,6 +224,9 @@ void computeCyclicOrder() {
             for (uint8_t b = 0; b < g_n_bots; b++) {
                 if (a == b || a == obs || b == obs) continue;
                 float ang = abs(getAngle(obs, a, b));
+                float raw = getAngle(obs, a, b);
+                if (raw == -999) continue;
+                float ang = abs(raw);
                 if (ang != -999 && ang > max_angle_found) {
                     max_angle_found = ang;
                 }
