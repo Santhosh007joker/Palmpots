@@ -1,0 +1,17 @@
+RL Solution:
+Two possible approaches-
+1. Each bot is represented as a DQN, which inputs measurement data, and angle rotated so far as state data, and outputs action suggestions, not only for itself, but also for the other 5 bots    to minimize its Energy function.
+2. The suggestions are sent to the corresponding bots, and at the end of one cycle, the bots add up the recommendations and move accordingly.
+3. Reward function will have 2 parts. One part will be associated with the local energy of the active bot. It will be determined by creating an artificial simulation within the run, in which each bot, one-by-one, makes the recommended move, and the change in the local energy of the active bot is noted. This will be artificial, and will not correspond to any actual movement of the bots (each bot will only move after it accumulates all the recommendations). The second part will be a weaker term dependent on the global energy of the system.
+4. The action space is discrete and the same for each bot. Each bot can choose out of 3 different actions, the combinations of which allow it to traverse to any point in the 2D plane.
+
+
+6 bots with randomized locations. Each bot performs actions according to a DQN. The output is the Q-values of each action of each bot stacked together. The input is the bearing data stacked together with the orientations of each bot. Let's focus on the neural net of a particular bot. It predicts Q-values for each action of not itself, but also other bots. These actions are called "recommended actions", because they selfishly benefit that particular bot, without consideration for the global energy. Each bot adds up all the recommended actions it receives. It then finds the action in the action space closest to the sum of all recommended actions.
+
+For training, each bot runs an artificial simulation, where it imagines the other 5 bots at a requisite distance at the measured angles, and then, one-by-one, applies the recommended action to that particular bot, and measures the change in energy. This change in energy is combined with a weaker term proportional to the current global energy of the configuration. This gives us the net reward of the recommender bot recommending that particular action to that particular bot. This is used to update the corresponding Q-value. There will be an epsilon-greedy action picking scheme, to ensure sufficient exploration.
+
+The training step taking place in the artificial simulation is independent of the recommended actions by the other bots, and thus the final movement direction of that particular bot. Hence, this step can be carried out before moving over to the active stage of the next bot.
+
+Essentially, each DQN acts as a selfish energy minimizer, with some intention of minimizing the global energy as well. The combination of actions from all recommender systems should try to minimize the global energy, if each selfish energy minimizer works as intended.
+
+I myself am not aware yet of how DQNs learn with a continuous action space. So, I cannot describe the mechanics of the learning process perfectly here.
