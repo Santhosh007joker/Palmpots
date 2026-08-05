@@ -14,7 +14,7 @@ they are not exposed to the policy.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 
@@ -169,11 +169,21 @@ class SwarmFormationEnv:
         c, s = np.cos(heading), np.sin(heading)
         return np.array([c * body_vector[0] - s * body_vector[1], s * body_vector[0] + c * body_vector[1]], dtype=np.float32)
 
-    def _apply_individual_action(self, positions: np.ndarray, headings: np.ndarray, recipient: int, action: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Counterfactual one-recommendation simulation used for local rewards."""
-        new_pos, new_heading = positions.copy(), headings.copy()
-        new_pos[recipient] += self._body_to_world(self._primitive(action), headings[recipient])
-        return new_pos, new_heading
+    def _executed_actions(self, recommendations: np.ndarray) -> np.ndarray:
+        """Aggregate incoming recommendations and project one command per robot."""
+        executed = np.full(self.cfg.n_bots, self.STOP, dtype=np.int64)
+        for recipient in range(self.cfg.n_bots):
+            actions = [int(recommendations[sender, recipient]) for sender in range(self.cfg.n_bots) if sender != recipient]
+            body_vector_sum = np.asarray([self._primitive(action) for action in actions], dtype=np.float32).sum(axis=0)
+            executed[recipient] = self._project_to_primitive(body_vector_sum)
+        return executed
+
+    def _positions_after_executed(self, positions: np.ndarray, headings: np.ndarray, executed: np.ndarray) -> np.ndarray:
+        """Apply one projected movement vector to each robot from a shared state."""
+        next_positions = positions.copy()
+        for recipient, action in enumerate(executed):
+            next_positions[recipient] += self._body_to_world(self._primitive(int(action)), headings[recipient])
+        return np.clip(next_positions, -self.cfg.arena_half_extent, self.cfg.arena_half_extent)
 
     def step(self, recommendations: np.ndarray) -> Tuple[Dict[str, np.ndarray], np.ndarray, bool, Dict[str, object]]:
         """Advance one collective control cycle.
@@ -189,34 +199,30 @@ class SwarmFormationEnv:
             raise ValueError("recommendations contain an invalid action")
 
         old_pos, old_headings = self.positions.copy(), self.headings.copy()
-        old_local = np.array([self.local_energy(i, old_pos) for i in range(self.cfg.n_bots)])
+        executed = self._executed_actions(rec)
+        aggregate_positions = self._positions_after_executed(old_pos, old_headings, executed)
 
-        # Counterfactual credit: what did this sender's suggestion do to its own energy?
-        local_counterfactual_improvement = np.zeros_like(rec, dtype=np.float32)
+        # Marginal local credit under the real controller: compare the sender's
+        # local energy with all recommendations against the same aggregate with
+        # just its recommendation to this recipient removed.
+        rewards = np.zeros_like(rec, dtype=np.float32)
         for sender in range(self.cfg.n_bots):
             for recipient in range(self.cfg.n_bots):
                 if sender == recipient:
                     continue
-                counter_pos, _ = self._apply_individual_action(old_pos, old_headings, recipient, int(rec[sender, recipient]))
-                local_counterfactual_improvement[sender, recipient] = old_local[sender] - self.local_energy(sender, counter_pos)
+                without_one = rec.copy()
+                without_one[sender, recipient] = self.STOP
+                without_executed = self._executed_actions(without_one)
+                without_positions = self._positions_after_executed(old_pos, old_headings, without_executed)
+                rewards[sender, recipient] = self.local_energy(sender, without_positions) - self.local_energy(sender, aggregate_positions)
 
-        executed = np.full(self.cfg.n_bots, self.STOP, dtype=np.int64)
-        for recipient in range(self.cfg.n_bots):
-            actions = [int(rec[sender, recipient]) for sender in range(self.cfg.n_bots) if sender != recipient]
-            body_vector_sum = np.asarray([self._primitive(action) for action in actions], dtype=np.float32).sum(axis=0)
-            executed[recipient] = self._project_to_primitive(body_vector_sum)
-
-        for recipient, action in enumerate(executed):
-            self.positions[recipient] += self._body_to_world(self._primitive(int(action)), self.headings[recipient])
-        self.positions = np.clip(self.positions, -self.cfg.arena_half_extent, self.cfg.arena_half_extent)
+        self.positions = aggregate_positions
         self.step_count += 1
 
         new_global = self.global_energy()
         collision = self.min_pair_distance() < self.cfg.min_separation
-        # Each recommender learns only to reduce *its own* angular energy.  The
-        # reward deliberately uses the single-recommendation counterfactual,
-        # not the aggregate of all recommendations executed by the recipient.
-        rewards = local_counterfactual_improvement
+        # Each recommender learns only to reduce its own angular energy; no
+        # global-energy reward or distance-based repulsion term is used.
         if collision:
             rewards -= 0.30
         np.fill_diagonal(rewards, 0.0)
